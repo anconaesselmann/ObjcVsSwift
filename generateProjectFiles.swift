@@ -296,8 +296,12 @@ func generateJson(dataModels: [[String: Any]], numberOfInstances: Int) -> [[Stri
             jsonDicts.append(instanceJsonDict)
         }
     }
-
-    return GKRandomSource.sharedRandom().arrayByShufflingObjects(in: jsonDicts) as! [[String : Any]]
+    if #available(OSX 10.11, *) {
+        return GKRandomSource.sharedRandom().arrayByShufflingObjects(in: jsonDicts) as! [[String : Any]]
+    } else {
+        return jsonDicts
+    }
+    
 }
 
 func getValue(type: String) -> Any? {

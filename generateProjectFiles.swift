@@ -1,6 +1,6 @@
 #!/usr/bin/swift
 
-// ./generateProjectFiles.swift --swift 50 --objc 50 --instances 10 --parameters 100 --output_directory "/ObjcVsSwift" --swift_single_file
+// ./main.swift --swift 50 --objc 50 --instances 10 --parameters 100 --output_directory "/ObjcVsSwift" --swift_single_file
 
 import Foundation
 import GameKit    // For shuffeling instance creation data
@@ -12,7 +12,9 @@ var numberOfInstances         = 5
 var numberOfClassParameters   = 5
 var useSwiftJsonProtocol      = false
 var swiftClassesInSingleFile  = false
+var verbose                   = false
 var outputDirectory           = ""
+var instancesDirectory: String?
 
 // MARK: - Reading from command line
 
@@ -24,6 +26,8 @@ enum OptionType {
     case jsonProtocolSwift
     case swiftSingleFile
     case outputDirectory
+    case verbose
+    case instancesDirectory
 
     init?(value: String) {
         switch value {
@@ -34,6 +38,8 @@ enum OptionType {
         case "--swift_json_protocol": self = .jsonProtocolSwift
         case "--swift_single_file":   self = .swiftSingleFile
         case "--output_directory":    self = .outputDirectory // doesnt currently work with ~/
+        case "--verbose":             self = .verbose
+        case "--instances_directory": self = .instancesDirectory
         default: return nil
         }
     }
@@ -67,7 +73,7 @@ for argumentIndex in 1..<CommandLine.arguments.count {
             currentOption = Option(type: type)
         } else {
             print("Incorrect option \(value)")
-            exit(1)
+            exit(-1)
         }
     } else {
         currentOption?.values.append(value)
@@ -104,7 +110,14 @@ for option in options {
             outputDirectory += "/"
         }
         print("Using output directory \(outputDirectory)")
+    case .verbose:
+        verbose = true
+        print("Verbose output")
+    case .instancesDirectory:
+        instancesDirectory = option.values.first!
+        print("Using instances directory \(instancesDirectory!)")
     }
+
 }
 
 // MARK: - Functions
@@ -296,8 +309,29 @@ func getValue(type: String) -> Any? {
     }
 }
 
-// MARK: - Script execution
 
+// MARK: - Files and directories
+
+let templateDir        = URL(fileURLWithPath: "TemplateProject")
+let targetDir          = URL(fileURLWithPath: outputDirectory + "SwiftObjc")
+
+let datamodelsUrl      = targetDir.appendingPathComponent("datamodels.json")
+
+let sharedInstancesDir = instancesDirectory != nil ? URL(fileURLWithPath: instancesDirectory!) : nil
+let instancesUrl       = targetDir.appendingPathComponent("SwiftObjc/Assets.xcassets/instances.dataset/instances.json")
+
+let bridgingHeaderUrl  = targetDir.appendingPathComponent("SwiftObjc/SwiftObjc-Bridging-Header.h")
+
+let swiftClassFilesDir = targetDir.appendingPathComponent("SwiftObjc/swift")
+let objcClassFilesDir  = targetDir.appendingPathComponent("SwiftObjc/objc")
+
+let singleSwiftFileUrl = swiftClassFilesDir.appendingPathComponent("allSwiftFiles.swift")
+
+let xcodeProjectUrl    = targetDir.appendingPathComponent("SwiftObjc.xcodeproj/project.pbxproj")
+let tempXcodeProjectUrl    = targetDir.appendingPathComponent("SwiftObjc.xcodeproj/_project.pbxproj")
+
+
+// MARK: - Script execution
 
 let classedAndDataModels = generateProjectClassesAndDataModels(numberSwiftClasses: numberOfSwiftClasses, numberObjectiveCClasses: numberOfObjectiveCClasses)
 let jsonDicts            = generateJson(dataModels: classedAndDataModels.datamodels, numberOfInstances: numberOfInstances)
@@ -306,49 +340,288 @@ let jsonData             = try! JSONSerialization.data(withJSONObject: jsonDicts
 let dataModelsData       = try! JSONSerialization.data(withJSONObject: classedAndDataModels.datamodels, options: .prettyPrinted)
 let bridgingHeaderData   = classedAndDataModels.objectiveCBridgingHeader.data(using: String.Encoding.utf8)
 
-
 // MARK: - Creating folder structure
 
-try FileManager.default.createDirectory(atPath: outputDirectory + "output/classes",       withIntermediateDirectories: true, attributes: nil)
-try FileManager.default.createDirectory(atPath: outputDirectory + "output/classes/swift", withIntermediateDirectories: true, attributes: nil)
-try FileManager.default.createDirectory(atPath: outputDirectory + "output/classes/objc",  withIntermediateDirectories: true, attributes: nil)
+if outputDirectory.characters.count > 0 && !FileManager.default.fileExists(atPath: outputDirectory) {
+    try FileManager.default.createDirectory(atPath: outputDirectory, withIntermediateDirectories: true, attributes: nil)
+}
 
 // MARK: - Saving to file
 
-print("Saving data models")
-FileManager.default.createFile(atPath: outputDirectory + "output/datamodels.json", contents: dataModelsData, attributes: nil)
+print("Copying Xcode project template")
+try? FileManager.default.copyItem(at: templateDir, to: targetDir)
 
-print("Saving json representation for instances")
-FileManager.default.createFile(atPath: outputDirectory + "output/instances.json", contents: jsonData, attributes: nil)
+print("Writing \(datamodelsUrl.relativePath)")
+FileManager.default.createFile(atPath: datamodelsUrl.relativePath, contents: dataModelsData, attributes: nil)
 
-print("Saving Bridgin-Header")
-FileManager.default.createFile(atPath: outputDirectory + "output/SwiftObjc-Bridging-Header.h", contents: bridgingHeaderData, attributes: nil)
+print("Writing \(bridgingHeaderUrl.relativePath)")
+FileManager.default.createFile(atPath: bridgingHeaderUrl.relativePath, contents: bridgingHeaderData, attributes: nil)
 
-print("Saving swift classes")
+if let url = sharedInstancesDir {
+    let sharedInstancesUrl = url.appendingPathComponent("instances.json")
+    if !FileManager.default.fileExists(atPath: sharedInstancesUrl.relativePath) {
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: nil)
+        print("Writing \(sharedInstancesUrl.relativePath)")
+        FileManager.default.createFile(atPath: sharedInstancesUrl.relativePath, contents: jsonData, attributes: nil)
+    }
+    print("Writing \(instancesUrl.relativePath)")
+    try FileManager.default.copyItem(at: sharedInstancesUrl, to: instancesUrl)
+} else {
+    print("Writing \(instancesUrl.relativePath)")
+    FileManager.default.createFile(atPath: instancesUrl.relativePath, contents: jsonData, attributes: nil)
+}
+
+
+
+
+var swiftClassNames = [String]()
+var objcHeaderNames = [String]()
+var objcImplementationNames = [String]()
+
+print("Writing swift classes")
 if swiftClassesInSingleFile {
-    print("Saving to single file")
+    print("Writing single file")
     var singleFile = ""
     for swiftClass in classedAndDataModels.swiftClasses {
         singleFile += swiftClass
     }
     let singleFileData = singleFile.data(using: String.Encoding.utf8)
-    FileManager.default.createFile(atPath: outputDirectory + "output/classes/swift/allSwiftFiles.swift", contents: singleFileData, attributes: nil)
+    FileManager.default.createFile(atPath: singleSwiftFileUrl.relativePath, contents: singleFileData, attributes: nil)
+    swiftClassNames.append("allSwiftFiles.swift")
 } else {
-    print("Saving to individual files")
+    print("Writing individual swift files")
     for (index, swiftClass) in classedAndDataModels.swiftClasses.enumerated() {
         let classData = swiftClass.data(using: String.Encoding.utf8)
-        FileManager.default.createFile(atPath: outputDirectory + "output/classes/swift/\(classedAndDataModels.datamodels[index]["className"] as! String).swift", contents: classData, attributes: nil)
+        let className = (classedAndDataModels.datamodels[index]["className"] as! String) + ".swift"
+        let fileName = swiftClassFilesDir.appendingPathComponent(className).relativePath
+        if verbose { print("Writing file `\(fileName)`") }
+        FileManager.default.createFile(atPath: fileName, contents: classData, attributes: nil)
+        swiftClassNames.append(className)
     }
 }
 
-print("Saving objective-c headers")
+print("Writing objective-c header files")
 for (index, objectiveCHeader) in classedAndDataModels.objectiveCHeaders.enumerated() {
     let headerData = objectiveCHeader.data(using: String.Encoding.utf8)
-    FileManager.default.createFile(atPath: outputDirectory + "output/classes/objc/\(classedAndDataModels.datamodels[index + classedAndDataModels.swiftClasses.count]["className"] as! String).h", contents: headerData, attributes: nil)
+    let className = (classedAndDataModels.datamodels[index + classedAndDataModels.swiftClasses.count]["className"] as! String) + ".h"
+    let fileName = objcClassFilesDir.appendingPathComponent(className).relativePath
+    if verbose { print("Writing file `\(fileName)`") }
+    FileManager.default.createFile(atPath: fileName, contents: headerData, attributes: nil)
+    objcHeaderNames.append(className)
 }
 
-print("Saving objective-c implementations")
+print("Writing objective-c implementation files")
 for (index, objectiveCImplementation) in classedAndDataModels.objectiveCImplementations.enumerated() {
     let implementationData = objectiveCImplementation.data(using: String.Encoding.utf8)
-    FileManager.default.createFile(atPath: outputDirectory + "output/classes/objc/\(classedAndDataModels.datamodels[index + classedAndDataModels.swiftClasses.count]["className"] as! String).m", contents: implementationData, attributes: nil)
+    let className = (classedAndDataModels.datamodels[index + classedAndDataModels.swiftClasses.count]["className"] as! String) + ".m"
+    let fileName = objcClassFilesDir.appendingPathComponent(className).relativePath
+    if verbose { print("Writing file `\(fileName)`") }
+    FileManager.default.createFile(atPath: fileName, contents: implementationData, attributes: nil)
+    objcImplementationNames.append(className)
+}
+
+print("Adding source files to Xcode project")
+
+// MARK: - Adding source files to Xcode project
+class XcodeEntry {
+    let name: String
+    var id: String
+    var id2: String
+
+    init(name: String) {
+        self.name = name
+        id = XcodeEntry.generateId()
+        id2 = XcodeEntry.generateId()
+    }
+
+    private static func generateId() -> String {
+        let uuid = UUID().uuidString
+        let index1 = uuid.index(uuid.startIndex, offsetBy: 8)
+        let index2 = uuid.index(index1, offsetBy: 1)
+        let index3 = uuid.index(index2, offsetBy: 4)
+        let index4 = uuid.index(index1, offsetBy: 16)
+        let range = index2..<index3
+        return uuid.substring(to: index1) + uuid.substring(with: range) + uuid.substring(from: index4)
+    }
+}
+
+class XcodeFolder {
+    let entry: XcodeEntry
+    var elements: [XcodeEntry]
+
+    init(name: String, elements: [String]) {
+        self.elements = elements.flatMap({XcodeEntry(name: $0)})
+        entry = XcodeEntry(name: name)
+    }
+}
+
+let folders: [XcodeFolder] = [XcodeFolder(name: "objc", elements: objcHeaderNames + objcImplementationNames), XcodeFolder(name: "swift", elements: swiftClassNames)]
+
+let projectName = "SwiftObjc"
+
+let encoding: String.Encoding = .utf8
+
+guard
+    let xcodeProjectFileHandle     = try? FileHandle(forReadingFrom: xcodeProjectUrl),
+    FileManager.default.createFile(atPath: tempXcodeProjectUrl.relativePath, contents: nil, attributes: nil),
+    let tempXcodeProjectFileHandle = try? FileHandle(forWritingTo: tempXcodeProjectUrl),
+    let delimData  = "\n".data(using: encoding) else {
+        exit(-1)
+}
+var chunkSize = 4096
+var buffer = Data(capacity: chunkSize)
+var atEof = false
+
+func readLine() -> String? {
+    while !atEof {
+        if let range = buffer.range(of: delimData) {
+            let line = String(data: buffer.subdata(in: 0..<range.lowerBound), encoding: encoding)
+            buffer.removeSubrange(0..<range.upperBound)
+            return line
+        }
+        let tmpData = xcodeProjectFileHandle.readData(ofLength: chunkSize)
+        if tmpData.count > 0 {
+            buffer.append(tmpData)
+        } else {
+            atEof = true
+            if buffer.count > 0 {
+                let line = String(data: buffer as Data, encoding: encoding)
+                buffer.count = 0
+                return line
+            }
+        }
+    }
+    return nil
+}
+
+
+enum XcodeSection {
+    case pbxGroup
+    case pbxSourcesBuildPhase
+
+    case none
+}
+
+var xcodeSection: XcodeSection = .none
+
+var matchingConditions = 0
+
+func getFolderEntry(for xCodeEntry: XcodeEntry) -> String {
+    return "\t\t\t\t\(xCodeEntry.id) /* \(xCodeEntry.name) */,\n"
+}
+
+func getChildEntry(_ xCodeEntry: XcodeEntry) -> String {
+    return "\t\t\t\t\(xCodeEntry.id2) /* \(xCodeEntry.name) */,"
+}
+
+func getFolderDefinition(for xCodeEntry: XcodeFolder) -> String {
+    let children = xCodeEntry.elements.flatMap({getChildEntry($0)}).joined(separator: "\n")
+    return "\t\t\(xCodeEntry.entry.id) /* \(xCodeEntry.entry.name) */ = {\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n\(children)\n\t\t\t);\n\t\t\tpath = \(xCodeEntry.entry.name);\n\t\t\tsourceTree = \"<group>\";\n\t\t};\n"
+}
+
+func getPbxBuildFileEntry(for xCodeEntry: XcodeEntry) -> String? {
+    guard !xCodeEntry.name.hasSuffix(".h") else {
+        return nil
+    }
+    return "\t\t\(xCodeEntry.id) /* \(xCodeEntry.name) in Sources */ = {isa = PBXBuildFile; fileRef = \(xCodeEntry.id2) /* \(xCodeEntry.name) */; };\n"
+}
+
+func getPbxFileReferenceEnry(for xCodeEntry: XcodeEntry) -> String {
+    let fileType: String
+    if xCodeEntry.name.hasSuffix(".swift") {
+        fileType = "sourcecode.swift"
+    } else if xCodeEntry.name.hasSuffix(".h") {
+        fileType = "sourcecode.c.h"
+    } else if xCodeEntry.name.hasSuffix(".m") {
+        fileType = "sourcecode.c.objc"
+    } else {
+        print("Error, wrong file type")
+        fileType = ""
+    }
+    return "\t\t\(xCodeEntry.id2) /* \(xCodeEntry.name) */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = \(fileType); path = \(xCodeEntry.name); sourceTree = \"<group>\"; };\n"
+}
+
+func getPbxSourcesBuildPhase(for xCodeEntry: XcodeEntry) -> String? {
+    guard !xCodeEntry.name.hasSuffix(".h") else {
+        return nil
+    }
+    return "\t\t\t\t\(xCodeEntry.id) /* \(xCodeEntry.name) in Sources */,\n"
+}
+
+while let line = readLine() {
+    defer {
+        tempXcodeProjectFileHandle.write((line + "\n").data(using: encoding)!)
+    }
+
+    switch line {
+    case "/* End PBXBuildFile section */":
+        for folder in folders {
+            for element in folder.elements {
+                if let pbxBuildFileEntry = getPbxBuildFileEntry(for: element) {
+                    tempXcodeProjectFileHandle.write((pbxBuildFileEntry).data(using: encoding)!)
+                }
+            }
+        }
+    case "/* End PBXFileReference section */":
+        for folder in folders {
+            for element in folder.elements {
+                let pbxFileReferenceEnry = getPbxFileReferenceEnry(for: element)
+                tempXcodeProjectFileHandle.write((pbxFileReferenceEnry).data(using: encoding)!)
+            }
+        }
+    case "/* Begin PBXGroup section */":
+        xcodeSection = .pbxGroup
+    case "/* End PBXGroup section */":
+        for folder in folders {
+            let folderDefinition = getFolderDefinition(for: folder)
+            tempXcodeProjectFileHandle.write((folderDefinition).data(using: encoding)!)
+        }
+        xcodeSection = .none
+    case "/* Begin PBXSourcesBuildPhase section */":
+        xcodeSection = .pbxSourcesBuildPhase
+
+    default: ()
+    }
+
+
+    switch xcodeSection {
+    case .pbxGroup:
+        if line.hasSuffix("/* \(projectName) */ = {") {
+            matchingConditions += 1
+        } else if matchingConditions > 0 && line.hasSuffix("children = (") {
+            matchingConditions += 1
+        } else if matchingConditions == 2 {
+            for folder in folders {
+                let folderEntry = getFolderEntry(for: folder.entry)
+                tempXcodeProjectFileHandle.write((folderEntry).data(using: encoding)!)
+            }
+            matchingConditions = 0
+        }
+    case .pbxSourcesBuildPhase:
+        if line.hasSuffix("files = (") {
+            matchingConditions += 1
+        } else if matchingConditions > 0 {
+            for folder in folders {
+                for element in folder.elements {
+                    if let sourceBuildPhase = getPbxSourcesBuildPhase(for: element) {
+                        tempXcodeProjectFileHandle.write((sourceBuildPhase).data(using: encoding)!)
+                    }
+                }
+
+            }
+            matchingConditions = 0
+            xcodeSection = .none
+        }
+    default: ()
+    }
+}
+
+tempXcodeProjectFileHandle.closeFile()
+tempXcodeProjectFileHandle.closeFile()
+
+do {
+    try FileManager.default.removeItem(at: xcodeProjectUrl)
+    let _ = try FileManager.default.replaceItemAt(xcodeProjectUrl, withItemAt: tempXcodeProjectUrl, backupItemName: nil, options: [])
+} catch {
+    print("Xcode project file could not be modified")
 }

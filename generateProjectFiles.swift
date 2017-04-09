@@ -1,9 +1,7 @@
 #!/usr/bin/swift
 
-// ./main.swift --swift 50 --objc 50 --instances 10 --parameters 100 --output_directory "/ObjcVsSwift" --swift_single_file
-
 import Foundation
-import GameKit    // For shuffeling instance creation data
+import GameKit // For shuffeling instance creation data
 
 // MARK: - Setting default values
 var numberOfSwiftClasses      = 100
@@ -122,13 +120,38 @@ for option in options {
 
 // MARK: - Functions
 
-// Currently only string is generated
 enum ParameterType: String {
     case string = "String"
     case int    = "Int"
     case double = "Double"
-    case date   = "Date"
-    case image  = "UIImage"
+    case bool   = "Bool"
+//    case bool
+//    case date   = "Date"
+//    case image  = "UIImage"
+    
+    init?(int: Int) {
+        switch int {
+        case 0: self = .string
+        case 1: self = .int
+        case 2: self = .double
+        case 3: self = .bool
+//        case 4: self = .date
+//        case 5: self = .image
+        default: return nil
+        }
+    }
+    
+    // Currently not random
+    func getRandomValue() -> Any {
+        switch self {
+        case .string: return "A random string"
+        case .int:    return 12345
+        case .double: return 123.45
+        case .bool:   return true
+//        case .date:   return Date()
+//        case .image:  return
+        }
+    }
 }
 
 func classAndDatamodel(numberParameters: Int, name: String) ->
@@ -143,8 +166,8 @@ func classAndDatamodel(numberParameters: Int, name: String) ->
     // Swift class
     var swiftClassDefinition = "class \(name): \(jsonProtocol) {\n"
 
-    for _ in 0..<numberParameters {
-        parameterTypes.append(getRandomParameterType())
+    for index in 0..<numberParameters {
+        parameterTypes.append(getRandomParameterType(index: index))
     }
 
     for (parameterIndex, parameterType) in parameterTypes.enumerated() {
@@ -192,17 +215,29 @@ func getObjectiveCParameterDefinition(type: ParameterType, name: String) -> Stri
     let objectiveCType: String
 
     switch type {
-    case .string:
-        objectiveCType = "NS" + type.rawValue
-    default:
-        objectiveCType = type.rawValue
+    case .string: objectiveCType = "(nonatomic, copy) NSString *"
+    case .int:    objectiveCType = "(nonatomic, assign) int "
+    case .double: objectiveCType = "(nonatomic, assign) double "
+    case .bool:   objectiveCType = "(nonatomic, assign) bool "
     }
+    return "@property \(objectiveCType)\(name);\n"
+}
 
-    return "@property (nonatomic, copy) \(objectiveCType) *\(name);\n"
+func getObjcCast(type: ParameterType, name: String) -> String {
+    switch type {
+    case .string: return "jsonDict[@\"\(name)\"]"
+    case .int:    return "[jsonDict[@\"\(name)\"] intValue]"
+    case .double: return "[jsonDict[@\"\(name)\"] doubleValue]"
+    case .bool:   return "[jsonDict[@\"\(name)\"] boolValue]"
+//    case .date:   return "jsonDict[@\"\(name)\"]"
+//    case .image:  return "jsonDict[@\"\(name)\"]"
+    }
 }
 
 func getObjectiveCParameterInitialization(type: ParameterType, name: String) -> String {
-    return "\t\tif (jsonDict[@\"\(name)\"]) {\n\t\t\tself.\(name) = jsonDict[@\"\(name)\"];\n\t\t}\n"
+    
+    let objcCast = getObjcCast(type: type, name: name)
+    return "\t\tif (jsonDict[@\"\(name)\"]) {\n\t\t\tself.\(name) = \(objcCast);\n\t\t}\n"
 }
 
 func getInitializer(parameterTypes: [ParameterType]) -> String {
@@ -243,9 +278,9 @@ func getFromJsonDictInit(parameterTypes: [ParameterType]) -> String {
     return initString
 }
 
-// Stub
-func getRandomParameterType() -> ParameterType {
-    return .string
+// Currently not random
+func getRandomParameterType(index: Int) -> ParameterType {
+    return ParameterType(int: index % 4)! // Currently no image or date
 }
 
 func generateProjectClassesAndDataModels(numberSwiftClasses: Int, numberObjectiveCClasses: Int) ->
@@ -289,7 +324,8 @@ func generateJson(dataModels: [[String: Any]], numberOfInstances: Int) -> [[Stri
 
             var propertiesJsonDict = [String: Any]()
             for (propertyName, propertyTypeString) in dataModel["parameters"] as? [String: String] ?? [:] {
-                let value = getValue(type: propertyTypeString)
+                let type = ParameterType(rawValue: propertyTypeString)!
+                let value = type.getRandomValue() // getValue(type: propertyTypeString)
                 propertiesJsonDict[propertyName] = value
             }
             instanceJsonDict["parameters"] = propertiesJsonDict
@@ -302,15 +338,6 @@ func generateJson(dataModels: [[String: Any]], numberOfInstances: Int) -> [[Stri
         return jsonDicts
     }
     
-}
-
-func getValue(type: String) -> Any? {
-    switch type {
-    case "String":
-        return "A random string"
-    default:
-        return nil
-    }
 }
 
 
@@ -346,6 +373,11 @@ let bridgingHeaderData   = classedAndDataModels.objectiveCBridgingHeader.data(us
 
 // MARK: - Creating folder structure
 
+if FileManager.default.fileExists(atPath: targetDir.relativePath) {
+    print("Error: Autogenerated project already exists at location `\(targetDir.relativePath)`")
+    exit(-1)
+}
+
 if outputDirectory.characters.count > 0 && !FileManager.default.fileExists(atPath: outputDirectory) {
     try FileManager.default.createDirectory(atPath: outputDirectory, withIntermediateDirectories: true, attributes: nil)
 }
@@ -374,9 +406,6 @@ if let url = sharedInstancesDir {
     print("Writing \(instancesUrl.relativePath)")
     FileManager.default.createFile(atPath: instancesUrl.relativePath, contents: jsonData, attributes: nil)
 }
-
-
-
 
 var swiftClassNames = [String]()
 var objcHeaderNames = [String]()
